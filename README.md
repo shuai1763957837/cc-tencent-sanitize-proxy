@@ -23,13 +23,6 @@ Claude Code
 要求 Node.js 18+。
 
 ```bash
-npm install
-npm start
-```
-
-也可以直接运行：
-
-```bash
 node cc-tencent-sanitize-proxy.cjs
 ```
 
@@ -40,6 +33,12 @@ http://127.0.0.1:15722
 ```
 
 ## cc-switch 配置
+
+先从 CodeBuddy 个人设置获取 API key：
+
+```text
+https://www.codebuddy.cn/profile/keys
+```
 
 把腾讯 provider URL 从：
 
@@ -53,14 +52,14 @@ https://copilot.tencent.com/v2/chat/completions
 http://127.0.0.1:15722/ccswitch-local/v2/chat/completions
 ```
 
-token、model、api format 等其他配置保持不变。
+token 使用上面获取的 API key。model、api format 等其他配置保持不变。
 
 ## 验证
 
 先跑脚本测试：
 
 ```bash
-npm test
+node cc-tencent-sanitize-proxy.test.cjs
 ```
 
 再跑 Claude Code 端到端测试：
@@ -86,13 +85,13 @@ const SANITIZE_PATTERNS = [
 保存最近一次清洗后的请求：
 
 ```bash
-SAVE_LAST_REQUEST=1 npm start
+SAVE_LAST_REQUEST=1 node cc-tencent-sanitize-proxy.cjs
 ```
 
 保存腾讯原始 SSE 和代理归一化后的 SSE：
 
 ```bash
-SAVE_LAST_RESPONSE=1 npm start
+SAVE_LAST_RESPONSE=1 node cc-tencent-sanitize-proxy.cjs
 ```
 
 调试文件会写到当前目录，已在 `.gitignore` 中忽略。
