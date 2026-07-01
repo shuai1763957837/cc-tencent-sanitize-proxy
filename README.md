@@ -54,20 +54,6 @@ http://127.0.0.1:15722/ccswitch-local/v2/chat/completions
 
 token 使用上面获取的 API key。model、api format 等其他配置保持不变。
 
-## 验证
-
-先跑脚本测试：
-
-```bash
-node cc-tencent-sanitize-proxy.test.cjs
-```
-
-再跑 Claude Code 端到端测试：
-
-```bash
-claude -p "只输出一句中文：端到端流式测试" --output-format=stream-json --verbose --debug api
-```
-
 ## 修改规则
 
 敏感文本替换规则在 `cc-tencent-sanitize-proxy.cjs` 顶部：
