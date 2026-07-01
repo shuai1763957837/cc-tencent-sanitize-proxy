@@ -1,0 +1,6 @@
+node_modules/
+npm-debug.log*
+cc-tencent-last-sanitized-request.json
+cc-tencent-last-upstream-response.sse
+cc-tencent-last-normalized-response.sse
+*.log
