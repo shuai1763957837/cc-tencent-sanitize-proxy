@@ -277,11 +277,13 @@ function hasMeaningfulToolCallDelta(toolCall) {
     return false;
   }
 
-  return (
-    (typeof toolCall.id === "string" && toolCall.id.length > 0) ||
-    (typeof toolCall.type === "string" && toolCall.type.length > 0) ||
-    hasMeaningfulFunctionCallDelta(toolCall.function)
-  );
+  const hasIndex =
+    Number.isInteger(toolCall.index) || typeof toolCall.index === "number";
+  const hasId = typeof toolCall.id === "string" && toolCall.id.length > 0;
+  const hasType = typeof toolCall.type === "string" && toolCall.type.length > 0;
+  const hasFunction = hasMeaningfulFunctionCallDelta(toolCall.function);
+
+  return hasId || hasType || hasFunction || (hasIndex && hasFunction);
 }
 
 function hasToolCallDelta(parsed) {
@@ -413,7 +415,7 @@ function collapseOpenAiSseToolCallStream(streamText) {
             index,
             role: "assistant",
             content: "",
-            fallbackContent: "",
+            reasoningContent: "",
             finishReason: null,
             toolCalls: new Map(),
             functionCall: null,
@@ -430,17 +432,19 @@ function collapseOpenAiSseToolCallStream(streamText) {
           typeof delta.reasoning_content === "string" &&
           delta.reasoning_content.length > 0
         ) {
-          state.fallbackContent += delta.reasoning_content;
+          state.reasoningContent += delta.reasoning_content;
         }
         if (typeof choice.message?.content === "string") {
-          state.fallbackContent += choice.message.content;
+          state.content += choice.message.content;
         }
         if (typeof choice.text === "string") {
-          state.fallbackContent += choice.text;
+          state.content += choice.text;
         }
         if (Array.isArray(delta.tool_calls)) {
           for (const toolCall of delta.tool_calls) {
-            appendToolCallDelta(state, toolCall || {});
+            if (hasMeaningfulToolCallDelta(toolCall)) {
+              appendToolCallDelta(state, toolCall || {});
+            }
           }
         }
         if (delta.function_call && typeof delta.function_call === "object") {
@@ -462,43 +466,38 @@ function collapseOpenAiSseToolCallStream(streamText) {
   const toolChoices = [];
 
   for (const state of orderedStates) {
+    const effectiveContent = state.content.length > 0 ? state.content : state.reasoningContent;
     const hasToolOutput = state.toolCalls.size > 0 || state.functionCall;
-    const outputContent =
-      state.content.length > 0 ? state.content : hasToolOutput ? "" : state.fallbackContent;
-    if (outputContent.length > 0) {
+
+    if (effectiveContent.length > 0) {
       contentChoices.push({
         index: state.index,
         delta: {
           role: state.role,
-          content: outputContent,
+          content: effectiveContent,
         },
         finish_reason: null,
       });
     }
 
-    if (state.toolCalls.size > 0) {
-      const delta = {
-        tool_calls: [...state.toolCalls.values()].sort((a, b) => a.index - b.index),
-      };
-      if (state.content.length === 0) {
+    if (hasToolOutput) {
+      const delta = state.toolCalls.size > 0
+        ? {
+            tool_calls: [...state.toolCalls.values()].sort((a, b) => a.index - b.index),
+          }
+        : { function_call: state.functionCall };
+      if (effectiveContent.length === 0) {
         delta.role = state.role;
       }
+      const finishReason = state.finishReason;
+      const normalizedFinishReason =
+        finishReason === "tool_calls" && state.toolCalls.size === 0 ? "stop" :
+        finishReason === "function_call" && !state.functionCall ? "stop" :
+        finishReason || (state.toolCalls.size > 0 ? "tool_calls" : "function_call");
       toolChoices.push({
         index: state.index,
         delta,
-        finish_reason: state.finishReason || "tool_calls",
-      });
-    } else if (state.functionCall) {
-      const delta = {
-        function_call: state.functionCall,
-      };
-      if (state.content.length === 0) {
-        delta.role = state.role;
-      }
-      toolChoices.push({
-        index: state.index,
-        delta,
-        finish_reason: state.finishReason || "function_call",
+        finish_reason: normalizedFinishReason,
       });
     }
   }
@@ -509,9 +508,9 @@ function collapseOpenAiSseToolCallStream(streamText) {
         index: state.index,
         delta: {
           role: state.role,
-          content: "\u200b",
+          content: "",
         },
-        finish_reason: "stop",
+        finish_reason: state.finishReason === "tool_calls" || state.finishReason === "function_call" ? "stop" : state.finishReason || "stop",
       })),
     );
   }
@@ -534,7 +533,7 @@ function collapseOpenAiSseStream(streamText) {
 
   let template = null;
   let content = "";
-  let fallbackContent = "";
+  let reasoningContent = "";
   let finishReason = "stop";
 
   for (const line of input.split(/\r?\n/)) {
@@ -561,13 +560,13 @@ function collapseOpenAiSseStream(streamText) {
           typeof choice.delta?.reasoning_content === "string" &&
           choice.delta.reasoning_content.length > 0
         ) {
-          fallbackContent += choice.delta.reasoning_content;
+          reasoningContent += choice.delta.reasoning_content;
         }
         if (typeof choice.message?.content === "string") {
-          fallbackContent += choice.message.content;
+          content += choice.message.content;
         }
         if (typeof choice.text === "string") {
-          fallbackContent += choice.text;
+          content += choice.text;
         }
         if (choice.finish_reason) {
           finishReason = choice.finish_reason;
@@ -579,10 +578,7 @@ function collapseOpenAiSseStream(streamText) {
   }
 
   const output = createSseTemplate(template);
-  const outputContent =
-    content.length > 0
-      ? content
-      : fallbackContent || (template ? "\u200b" : "");
+  const outputContent = content.length > 0 ? content : reasoningContent;
 
   output.choices = [
     {

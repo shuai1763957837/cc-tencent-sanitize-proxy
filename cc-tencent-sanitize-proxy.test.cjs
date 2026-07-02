@@ -9,6 +9,20 @@ const {
   sanitizeRequestJson,
 } = require("./cc-tencent-sanitize-proxy.cjs");
 
+function sseData(obj) {
+  return `data: ${JSON.stringify(obj)}`;
+}
+
+function chunk(id, model, delta, finishReason = "") {
+  return {
+    id,
+    model,
+    object: "chat.completion.chunk",
+    created: 1,
+    choices: [{ index: 0, delta, finish_reason: finishReason }],
+  };
+}
+
 function firstSseJson(streamText) {
   const line = streamText.split(/\r?\n/).find((item) => item.startsWith("data: "));
   assert.ok(line, "SSE data line not found");
@@ -344,9 +358,9 @@ function firstSseJson(streamText) {
   const emptyOutput = firstSseJson(output);
 
   assert.match(output, /"model":"kimi-k2.7"/);
-  assert.equal(emptyOutput.choices[0].delta.content, "\u200b");
+  assert.equal(emptyOutput.choices[0].delta.content, "");
   assert.match(output, /"finish_reason":"stop"/);
-  assert.equal(output.includes('"content":""'), false);
+  assert.equal(output.includes('"content":""'), true);
 }
 
 {
@@ -368,17 +382,17 @@ function firstSseJson(streamText) {
 
 {
   const input = [
-    'data: {"id":"abc","model":"deepseek-v4-flash","object":"chat.completion.chunk","created":1,"choices":[{"index":0,"delta":{"role":"assistant","content":"准备","reasoning_content":""},"finish_reason":""}]}',
+    sseData(chunk("abc", "deepseek-v4-flash", { role: "assistant", content: "准备", reasoning_content: "" })),
     "",
-    'data: {"id":"abc","model":"deepseek-v4-flash","object":"chat.completion.chunk","created":1,"choices":[{"index":0,"delta":{"content":"读取","reasoning_content":""},"finish_reason":""}]}',
+    sseData(chunk("abc", "deepseek-v4-flash", { content: "读取", reasoning_content: "" })),
     "",
-    'data: {"id":"abc","model":"deepseek-v4-flash","object":"chat.completion.chunk","created":1,"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"Read","arguments":""}}]},"finish_reason":""}]}',
+    sseData(chunk("abc", "deepseek-v4-flash", { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "Read", arguments: "" } }] })),
     "",
-    'data: {"id":"abc","model":"deepseek-v4-flash","object":"chat.completion.chunk","created":1,"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"file_path\\":"}}]},"finish_reason":""}]}',
+    sseData(chunk("abc", "deepseek-v4-flash", { tool_calls: [{ index: 0, function: { arguments: '{"file_path":' } }] })),
     "",
-    'data: {"id":"abc","model":"deepseek-v4-flash","object":"chat.completion.chunk","created":1,"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"demo.txt\\"}"}}]},"finish_reason":""}]}',
+    sseData(chunk("abc", "deepseek-v4-flash", { tool_calls: [{ index: 0, function: { arguments: '"demo.txt"}' } }] })),
     "",
-    'data: {"id":"abc","model":"deepseek-v4-flash","object":"chat.completion.chunk","created":1,"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+    sseData(chunk("abc", "deepseek-v4-flash", {}, "tool_calls")),
     "",
     "data: [DONE]",
     "",
@@ -398,9 +412,9 @@ function firstSseJson(streamText) {
 
 {
   const input = [
-    'data: {"id":"empty-tool","model":"deepseek-v4-flash","object":"chat.completion.chunk","created":1,"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":""}]}',
+    sseData(chunk("empty-tool", "deepseek-v4-flash", { role: "assistant" })),
     "",
-    'data: {"id":"empty-tool","model":"deepseek-v4-flash","object":"chat.completion.chunk","created":1,"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+    sseData(chunk("empty-tool", "deepseek-v4-flash", {}, "tool_calls")),
     "",
     "data: [DONE]",
     "",
@@ -408,16 +422,16 @@ function firstSseJson(streamText) {
 
   const output = firstSseJson(collapseOpenAiSseStream(input));
 
-  assert.equal(output.choices[0].delta.content, "\u200b");
+  assert.equal(output.choices[0].delta.content, "");
   assert.equal(output.choices[0].finish_reason, "stop");
   assert.equal(JSON.stringify(output).includes("tool_calls"), false);
 }
 
 {
   const input = [
-    'data: {"id":"tool-reasoning","model":"deepseek-v4-flash","object":"chat.completion.chunk","created":1,"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"I should call a tool."},"finish_reason":""}]}',
+    sseData(chunk("tool-reasoning", "deepseek-v4-flash", { role: "assistant", reasoning_content: "I should call a tool." })),
     "",
-    'data: {"id":"tool-reasoning","model":"deepseek-v4-flash","object":"chat.completion.chunk","created":1,"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"Read","arguments":"{\\"file_path\\":\\"demo.txt\\"}"}}]},"finish_reason":"tool_calls"}]}',
+    sseData(chunk("tool-reasoning", "deepseek-v4-flash", { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "Read", arguments: '{"file_path":"demo.txt"}' } }] }, "tool_calls")),
     "",
     "data: [DONE]",
     "",
@@ -426,10 +440,57 @@ function firstSseJson(streamText) {
   const output = collapseOpenAiSseStream(input);
   const dataLines = output.split(/\r?\n/).filter((line) => line.startsWith("data: {"));
 
-  assert.equal(dataLines.length, 1);
+  assert.equal(dataLines.length, 2);
+  assert.match(output, /"content":"I should call a tool."/);
   assert.match(output, /"tool_calls"/);
-  assert.equal(output.includes("I should call a tool."), false);
-  assert.equal(output.includes('"content":'), false);
+  assert.match(output, /"finish_reason":"tool_calls"/);
+  assert.equal(output.includes("reasoning_content"), false);
+}
+
+{
+  const input = [
+    sseData(chunk("kimi-tool", "kimi-k2.7", { role: "assistant", content: "", reasoning_content: "" })),
+    "",
+    sseData(chunk("kimi-tool", "kimi-k2.7", { content: "", reasoning_content: "The user wants to close the local port." })),
+    "",
+    sseData(chunk("kimi-tool", "kimi-k2.7", { content: "", reasoning_content: " I will use PowerShell." })),
+    "",
+    sseData(chunk("kimi-tool", "kimi-k2.7", { content: "", reasoning_content: "", tool_calls: [{ index: 0, id: "PowerShell_0", type: "function", function: { name: "PowerShell", arguments: "" } }] })),
+    "",
+    sseData(chunk("kimi-tool", "kimi-k2.7", { content: "", reasoning_content: "", tool_calls: [{ index: 0, function: { arguments: '{"command": "' } }] })),
+    "",
+    sseData(chunk("kimi-tool", "kimi-k2.7", { content: "", reasoning_content: "", tool_calls: [{ index: 0, function: { arguments: 'stop"}' } }] }, "tool_calls")),
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+
+  const output = collapseOpenAiSseStream(input);
+  const dataLines = output.split(/\r?\n/).filter((line) => line.startsWith("data: {"));
+
+  assert.equal(dataLines.length, 2);
+  assert.match(output, /"content":"The user wants to close the local port\. I will use PowerShell\."/);
+  assert.match(output, /"name":"PowerShell"/);
+  assert.match(output, /"arguments":"\{\\"command\\": \\"stop\\"\}"/);
+  assert.equal(output.includes("reasoning_content"), false);
+  assert.equal(output.includes('"content":""'), false);
+}
+
+{
+  const input = [
+    sseData(chunk("reasoning-only", "kimi-k2.7", { role: "assistant", content: "", reasoning_content: "" })),
+    "",
+    sseData(chunk("reasoning-only", "kimi-k2.7", { content: "", reasoning_content: "only reasoning" }, "stop")),
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+
+  const output = firstSseJson(collapseOpenAiSseStream(input));
+
+  assert.equal(output.choices[0].delta.content, "only reasoning");
+  assert.equal(output.choices[0].finish_reason, "stop");
+  assert.equal(JSON.stringify(output).includes("reasoning_content"), false);
 }
 
 console.log("cc-tencent-sanitize-proxy tests passed");
