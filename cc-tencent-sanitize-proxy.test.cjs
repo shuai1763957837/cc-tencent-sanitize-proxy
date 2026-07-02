@@ -157,11 +157,14 @@ function firstSseJson(streamText) {
 }
 
 {
+  const originalSystem =
+    "You are Claude Code, Anthropic's official CLI for Claude.\nKeep";
+  const expectedSystem = "You are an interactive coding agent.\nKeep";
   const body = {
     messages: [
       {
         role: "system",
-        content: "You are Claude Code, Anthropic's official CLI for Claude.\nKeep",
+        content: originalSystem,
       },
       {
         role: "user",
@@ -172,13 +175,32 @@ function firstSseJson(streamText) {
 
   const { value, stats } = sanitizeRequestJson(body);
 
-  assert.equal(value.messages[0].content, "You are an interactive coding agent.\nKeep");
+  assert.equal(value.messages[0].content, expectedSystem);
   assert.equal(
     value.messages[1].content,
     "You are Claude Code, Anthropic's official CLI for Claude.",
   );
   assert.equal(stats.replacements, 1);
-  assert.deepEqual([...stats.rules], ["claude-code-branding"]);
+  assert.equal(
+    stats.bytesDelta,
+    Buffer.byteLength(expectedSystem) - Buffer.byteLength(originalSystem),
+  );
+  assert.deepEqual([...stats.rules], ["branding-opening"]);
+}
+
+{
+  const body = {
+    system: "claude and CLAUDE and Claude",
+  };
+
+  const { value, stats } = sanitizeRequestJson(body);
+
+  assert.equal(
+    value.system,
+    "the coding agent and the coding agent and the coding agent",
+  );
+  assert.equal(stats.replacements, 3);
+  assert.deepEqual([...stats.rules], ["claude-bare"]);
 }
 
 {
@@ -196,7 +218,7 @@ function firstSseJson(streamText) {
   assert.equal(stats.replacements, 3);
   assert.deepEqual([...stats.rules].sort(), [
     "anthropic-billing-header",
-    "claude-code-branding",
+    "branding-opening",
     "main-branch-hint",
   ]);
 }

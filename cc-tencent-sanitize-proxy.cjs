@@ -26,16 +26,15 @@ const LAST_NORMALIZED_RESPONSE_PATH = path.join(
 );
 
 const SANITIZE_PATTERNS = [
+  // ── Opening sentence (exact match, both CLI and VS Code variants) ──
   {
-    name: "claude-code-branding",
-    regex: /You are Claude Code, Anthropic's official CLI for Claude\./g,
+    name: "branding-opening",
+    regex: /You are Claude Code, Anthropic's official CLI for Claude(?:, running within the Claude Agent SDK)?\./gi,
     replacement: "You are an interactive coding agent.",
   },
-  {
-    name: "anthropic-billing-header",
-    regex: /^x-anthropic-billing-header:.*(?:\r?\n)?/gm,
-    replacement: "",
-  },
+
+  // ── Structural block rewrites (line-anchored; run before word-level rules
+  //     so deleted block content does not inflate replacement counts) ──
   {
     name: "main-branch-hint",
     regex: /^Main branch(?: \(you will usually use this for PRs\))?:.*(\r?\n)?/gm,
@@ -46,6 +45,103 @@ const SANITIZE_PATTERNS = [
     regex: /^# Doing tasks\r?\n(?:[ \t]+- .*(?:\r?\n|$))+/gm,
     replacement:
       "# Work context\nHandle software engineering tasks in the current workspace with focused, safe, minimal changes.\n",
+  },
+
+  // ── Multi-word product names (before single-word rules) ──
+  {
+    name: "claude-code-product",
+    regex: /Claude Code/gi,
+    replacement: "the coding agent",
+  },
+  {
+    name: "claude-agent-sdk",
+    regex: /Claude Agent SDK/gi,
+    replacement: "the Agent SDK",
+  },
+  {
+    name: "claude-api-product",
+    regex: /Claude API/gi,
+    replacement: "the AI API",
+  },
+  {
+    name: "anthropic-api-product",
+    regex: /Anthropic API/gi,
+    replacement: "the AI API",
+  },
+  {
+    name: "anthropic-sdk",
+    regex: /Anthropic SDK/gi,
+    replacement: "the AI SDK",
+  },
+
+  // ── Company references (specific → broad: header line, package, possessive, then bare) ──
+  {
+    name: "anthropic-billing-header",
+    regex: /^x-anthropic-billing-header:.*(?:\r?\n)?/gm,
+    replacement: "",
+  },
+  {
+    name: "anthropic-package",
+    regex: /@anthropic-ai/gi,
+    replacement: "@ai-provider-sdk",
+  },
+  {
+    name: "anthropic-possessive",
+    regex: /Anthropic's/gi,
+    replacement: "the AI provider's",
+  },
+  {
+    name: "anthropic-company",
+    regex: /Anthropic/gi,
+    replacement: "the AI provider",
+  },
+
+  // ── Model IDs (before bare "Claude") ──
+  {
+    name: "claude-model-ids",
+    regex: /\bclaude-(opus-\d+[-\w]*|sonnet-\d+[-\w]*|haiku-\d+[-\w]*|fable-\d+[-\w]*)\b/gi,
+    replacement: "model-$1",
+  },
+  {
+    name: "claude-model-family",
+    regex: /\bClaude (models|5 family)\b/gi,
+    replacement: "the latest models",
+  },
+  {
+    name: "claude-model-named",
+    regex: /\bClaude (Opus|Sonnet|Haiku|Fable)(?:\s+\d[\d.]*)?\b/gi,
+    replacement: "Model $1",
+  },
+  {
+    name: "claude-model-context",
+    regex: /\[1m\]/g,
+    replacement: "",
+  },
+
+  // ── Domains & hyphenated refs ──
+  {
+    name: "claude-domain",
+    regex: /claude\.ai/gi,
+    replacement: "ai-provider.ai",
+  },
+  {
+    name: "claude-hyphenated",
+    regex: /\bclaude-(code|api)\b/gi,
+    replacement: "ai-$1",
+  },
+
+  // ── Catch-all: bare "Claude" after multi-word patterns have fired ──
+  {
+    name: "claude-bare",
+    regex: /\bClaude\b/gi,
+    replacement: "the coding agent",
+  },
+
+  // ── FleetView ──
+  {
+    name: "fleetview",
+    regex: /FleetView/gi,
+    replacement: "Dashboard",
   },
 ];
 
@@ -94,17 +190,22 @@ function sanitizeText(text, stats) {
   let result = text;
   for (const rule of SANITIZE_PATTERNS) {
     const regex = new RegExp(rule.regex.source, rule.regex.flags);
-    result = result.replace(regex, (...args) => {
-      const match = args[0];
-      const replacement =
-        typeof rule.replacement === "function"
-          ? rule.replacement(...args)
-          : rule.replacement;
-      stats.replacements += 1;
-      stats.bytesDelta += Buffer.byteLength(replacement) - Buffer.byteLength(match);
-      stats.rules.add(rule.name);
-      return replacement;
-    });
+    const globalRegex = regex.global
+      ? regex
+      : new RegExp(regex.source, `${regex.flags}g`);
+
+    const matches = [...result.matchAll(globalRegex)];
+    if (matches.length === 0) {
+      continue;
+    }
+
+    const beforeBytes = Buffer.byteLength(result);
+    result = result.replace(globalRegex, rule.replacement);
+    const afterBytes = Buffer.byteLength(result);
+
+    stats.replacements += matches.length;
+    stats.bytesDelta += afterBytes - beforeBytes;
+    stats.rules.add(rule.name);
   }
 
   return result;
