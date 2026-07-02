@@ -40,13 +40,7 @@ http://127.0.0.1:15722
 https://www.codebuddy.cn/profile/keys
 ```
 
-把腾讯 provider URL 从：
-
-```text
-https://copilot.tencent.com/v2/chat/completions
-```
-
-改成：
+ccswitch 请求地址完整 URL 填写：
 
 ```text
 http://127.0.0.1:15722/ccswitch-local/v2/chat/completions
