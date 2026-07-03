@@ -4,10 +4,11 @@ const {
   TARGET_UPSTREAM,
   collapseOpenAiSseStream,
   normalizeOpenAiSseLine,
+  normalizeUsage,
   resolveUpstreamUrl,
   shouldSanitize,
   sanitizeRequestJson,
-} = require("./cc-tencent-sanitize-proxy.cjs");
+} = require("../lib/index.cjs");
 
 function sseData(obj) {
   return `data: ${JSON.stringify(obj)}`;
@@ -27,6 +28,13 @@ function firstSseJson(streamText) {
   const line = streamText.split(/\r?\n/).find((item) => item.startsWith("data: "));
   assert.ok(line, "SSE data line not found");
   return JSON.parse(line.slice("data: ".length));
+}
+
+function sseJsonLines(streamText) {
+  return streamText
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data: {"))
+    .map((line) => JSON.parse(line.slice("data: ".length)));
 }
 
 {
@@ -336,6 +344,38 @@ function firstSseJson(streamText) {
 }
 
 {
+  const usage = {
+    prompt_tokens: 11,
+    completion_tokens: 2,
+    total_tokens: 13,
+    prompt_tokens_details: {
+      cached_tokens: 7,
+    },
+  };
+  const input = [
+    'data: {"id":"usage-tail","model":"glm-5.2","object":"chat.completion.chunk","created":1,"choices":[{"index":0,"delta":{"role":"assistant","content":"OK"},"finish_reason":"stop"}]}',
+    "",
+    `data: ${JSON.stringify({
+      id: "usage-tail",
+      model: "glm-5.2",
+      object: "chat.completion.chunk",
+      created: 1,
+      choices: [],
+      usage,
+    })}`,
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+
+  const output = firstSseJson(collapseOpenAiSseStream(input));
+
+  // cached_tokens maps to cache_read_input_tokens for Claude Code cache stats
+  assert.equal(output.usage.cache_read_input_tokens, 7);
+  assert.equal(output.usage.prompt_tokens_details.cached_tokens, 7);
+}
+
+{
   const input = [
     ': ping\r',
     'data: {"id":"abc","model":"deepseek-v4-flash","object":"chat.completion.chunk","created":1,"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":""}]}\r',
@@ -433,6 +473,41 @@ function firstSseJson(streamText) {
 }
 
 {
+  const usage = {
+    prompt_tokens: 21,
+    completion_tokens: 4,
+    total_tokens: 25,
+    prompt_tokens_details: {
+      cached_tokens: 15,
+    },
+  };
+  const input = [
+    sseData(chunk("tool-usage-tail", "glm-5.2", { role: "assistant", content: "准备" })),
+    "",
+    sseData(chunk("tool-usage-tail", "glm-5.2", { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "Read", arguments: '{"file_path":"demo.txt"}' } }] }, "tool_calls")),
+    "",
+    `data: ${JSON.stringify({
+      id: "tool-usage-tail",
+      model: "glm-5.2",
+      object: "chat.completion.chunk",
+      created: 1,
+      choices: [],
+      usage,
+    })}`,
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+
+  const output = sseJsonLines(collapseOpenAiSseStream(input));
+
+  assert.equal(output.length, 2);
+  assert.equal(output[0].usage, null);
+  assert.equal(output[1].usage.cache_read_input_tokens, 15);
+  assert.equal(output[1].usage.prompt_tokens_details.cached_tokens, 15);
+}
+
+{
   const input = [
     sseData(chunk("empty-tool", "deepseek-v4-flash", { role: "assistant" })),
     "",
@@ -513,6 +588,85 @@ function firstSseJson(streamText) {
   assert.equal(output.choices[0].delta.content, "only reasoning");
   assert.equal(output.choices[0].finish_reason, "stop");
   assert.equal(JSON.stringify(output).includes("reasoning_content"), false);
+}
+
+{
+  // Tencent returns prompt_cache_hit_tokens / prompt_cache_miss_tokens; the
+  // proxy must map them to cache_read_input_tokens / cache_creation_input_tokens
+  // so Claude Code reports accurate cache stats. Mirrors real glm-5.2 usage.
+  const tencentUsage = {
+    prompt_tokens: 36852,
+    completion_tokens: 2,
+    total_tokens: 36854,
+    prompt_tokens_details: { cached_tokens: 7936 },
+    prompt_cache_hit_tokens: 7936,
+    prompt_cache_miss_tokens: 28916,
+    cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+  };
+  const tail = {
+    id: "cmb-584450",
+    model: "glm-5.2",
+    object: "chat.completion.chunk",
+    created: 1783071663,
+    choices: [
+      {
+        index: 0,
+        delta: { role: "assistant", content: "pong" },
+        finish_reason: "stop",
+      },
+    ],
+    usage: tencentUsage,
+  };
+  const input = [
+    sseData(chunk("cmb-584450", "glm-5.2", { role: "assistant", content: "pong" }, "stop")),
+    "",
+    `data: ${JSON.stringify(tail)}`,
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+
+  const output = firstSseJson(collapseOpenAiSseStream(input));
+
+  assert.equal(output.usage.prompt_cache_hit_tokens, 7936);
+  assert.equal(output.usage.cache_read_input_tokens, 7936);
+  assert.equal(output.usage.prompt_cache_miss_tokens, 28916);
+  assert.equal(output.usage.cache_creation_input_tokens, 28916);
+}
+
+{
+  // Direct normalizeUsage unit checks: hit/miss map to read/creation;
+  // already-populated Anthropic fields are preserved (not overwritten).
+  assert.equal(
+    normalizeUsage({
+      prompt_cache_hit_tokens: 100,
+      prompt_cache_miss_tokens: 50,
+    }).cache_read_input_tokens,
+    100,
+  );
+  assert.equal(
+    normalizeUsage({
+      prompt_cache_hit_tokens: 100,
+      prompt_cache_miss_tokens: 50,
+    }).cache_creation_input_tokens,
+    50,
+  );
+  assert.equal(
+    normalizeUsage({
+      prompt_tokens_details: { cached_tokens: 8 },
+    }).cache_read_input_tokens,
+    8,
+  );
+  assert.equal(
+    normalizeUsage({
+      prompt_cache_hit_tokens: 100,
+      cache_read_input_tokens: 42,
+    }).cache_read_input_tokens,
+    42,
+  );
+  assert.deepEqual(normalizeUsage(null), null);
+  assert.deepEqual(normalizeUsage(undefined), undefined);
 }
 
 console.log("cc-tencent-sanitize-proxy tests passed");

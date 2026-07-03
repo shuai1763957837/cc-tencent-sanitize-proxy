@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- CLI `cct` command (`cct start` / `cct stop` / `cct restart` / `cct status` / `cct logs`) for background process management, with `--port`, `--save-last-request`, `--save-last-response` flags.
+- `package.json` declaring `bin`, `main`, `files`, `engines`, and npm scripts.
+- GitHub install shorthand (`npm install -g shuai1763957837/cc-tencent-sanitize-proxy`) documented in README.
+
+### Changed
+- Reorganize to classic npm package layout: source moved to `lib/index.cjs`, tests to `test/index.test.cjs`, CLI entry to `bin/cct.js`. Debug artifacts now resolve to project root via `path.join(__dirname, "..")`.
+
+### Fixed
+- Map Tencent Copilot cache fields (`prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` and `prompt_tokens_details.cached_tokens`) into Anthropic's `cache_read_input_tokens` / `cache_creation_input_tokens` in the normalized SSE. Claude Code reads the Anthropic fields for cache statistics, so it previously reported zero cache hits even though Tencent was hitting cache. Verified end-to-end: Claude Code now reports non-zero `cacheReadInputTokens`.
+
 ## [0.3.0] - 2026-07-02
 
 ### Added
@@ -38,7 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial release of the cc tencent sanitize proxy.
 
-[Unreleased]: https://github.com/shuaizx/cc-tencent-sanitize-proxy/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/shuaizx/cc-tencent-sanitize-proxy/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/shuaizx/cc-tencent-sanitize-proxy/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/shuaizx/cc-tencent-sanitize-proxy/releases/tag/v0.1.0
+[Unreleased]: https://github.com/shuai1763957837/cc-tencent-sanitize-proxy/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/shuai1763957837/cc-tencent-sanitize-proxy/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/shuai1763957837/cc-tencent-sanitize-proxy/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/shuai1763957837/cc-tencent-sanitize-proxy/releases/tag/v0.1.0
