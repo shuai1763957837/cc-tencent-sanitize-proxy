@@ -50,15 +50,36 @@ function clearPid() {
   }
 }
 
-function buildEnv(options) {
-  const env = { ...process.env };
-  if (options.port != null) env.PORT = String(options.port);
-  if (options.saveLastRequest) env.SAVE_LAST_REQUEST = "1";
-  if (options.saveLastResponse) env.SAVE_LAST_RESPONSE = "1";
-  return env;
+function buildArgs(options) {
+  const args = [PROXY_SCRIPT];
+  if (options.port != null) args.push("--port", String(options.port));
+  if (options.saveLastRequest) args.push("--save-last-request");
+  if (options.saveLastResponse) args.push("--save-last-response");
+  if (options.verbose) args.push("--verbose");
+  return args;
 }
 
 function start(options) {
+  const args = buildArgs(options);
+  const port = options.port || "15722";
+
+  // 前台模式：stdio 直连当前终端，不 detach、不写 pid，Ctrl+C 直接终止子进程
+  if (options.foreground) {
+    const child = spawn(process.execPath, args, {
+      cwd: ROOT,
+      stdio: "inherit",
+      windowsHide: false,
+    });
+    const killChild = (sig) => {
+      try { process.kill(child.pid, sig); } catch (e) { /* already exited */ }
+    };
+    process.on("SIGINT", () => killChild("SIGINT"));
+    process.on("SIGTERM", () => killChild("SIGTERM"));
+    child.on("exit", (code) => process.exit(code ?? 0));
+    return;
+  }
+
+  // 后台模式（默认）
   ensureDataDir();
   const existing = readPid();
   if (existing && isRunning(existing)) {
@@ -67,12 +88,10 @@ function start(options) {
   }
   clearPid();
 
-  const env = buildEnv(options);
   const out = fs.openSync(LOG_FILE, "a");
   const err = fs.openSync(LOG_FILE, "a");
-  const child = spawn(process.execPath, [PROXY_SCRIPT], {
+  const child = spawn(process.execPath, args, {
     cwd: ROOT,
-    env,
     detached: true,
     stdio: ["ignore", out, err],
     windowsHide: true,
@@ -80,7 +99,6 @@ function start(options) {
   child.unref();
 
   writePid(child.pid);
-  const port = env.PORT || "15722";
   console.log(`cct started, pid=${child.pid}, port=${port}`);
   console.log(`log: ${LOG_FILE}`);
 }
@@ -151,6 +169,8 @@ function parseArgs(argv) {
     port: null,
     saveLastRequest: false,
     saveLastResponse: false,
+    verbose: false,
+    foreground: false,
   };
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
@@ -171,6 +191,10 @@ function parseArgs(argv) {
       options.saveLastRequest = true;
     } else if (arg === "--save-last-response") {
       options.saveLastResponse = true;
+    } else if (arg === "--verbose") {
+      options.verbose = true;
+    } else if (arg === "--foreground") {
+      options.foreground = true;
     } else if (arg === "-h" || arg === "--help") {
       positional.push(arg);
     } else {
@@ -194,6 +218,8 @@ Options:
   --port, -p <number>     Override listen port (default 15722)
   --save-last-request     Save last sanitized request to disk
   --save-last-response    Save last upstream/normalized SSE to disk
+  --verbose               Print request/response details to console
+  --foreground            Run in foreground instead of background (default background)
 
 Files:
   pid:  ${PID_FILE}
