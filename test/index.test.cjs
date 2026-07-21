@@ -3,8 +3,10 @@ const assert = require("node:assert/strict");
 const {
   TARGET_UPSTREAM,
   collapseOpenAiSseStream,
+  collapseOpenAiSseToNonStreamJson,
   normalizeOpenAiSseLine,
   normalizeUsage,
+  pipeCollapsedToNonStream,
   resolveUpstreamUrl,
   shouldSanitize,
   sanitizeRequestJson,
@@ -667,6 +669,111 @@ function sseJsonLines(streamText) {
   );
   assert.deepEqual(normalizeUsage(null), null);
   assert.deepEqual(normalizeUsage(undefined), undefined);
+}
+
+{
+  // collapseOpenAiSseToNonStreamJson 把上游 SSE 折叠成单个非流式
+  // chat.completion JSON，供「proxy 强制转流式发腾讯」场景对客户端透明返回。
+  const sse = [
+    sseData(chunk("abc", "glm-5.2", { role: "assistant", content: "" })),
+    "",
+    sseData(chunk("abc", "glm-5.2", { content: "你好" })),
+    "",
+    sseData(chunk("abc", "glm-5.2", {}, "stop")),
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+
+  const out = JSON.parse(collapseOpenAiSseToNonStreamJson(sse));
+
+  assert.equal(out.object, "chat.completion");
+  assert.equal(out.choices.length, 1);
+  assert.equal(out.choices[0].message.role, "assistant");
+  assert.equal(out.choices[0].message.content, "你好");
+  assert.equal(out.choices[0].finish_reason, "stop");
+  assert.equal(JSON.stringify(out).includes("reasoning_content"), false);
+  assert.equal(out.choices[0].message.tool_calls, undefined);
+}
+
+{
+  // 工具调用路径：tool_calls 收敛到 message.tool_calls，finish_reason 跟随
+  const sse = [
+    sseData(chunk("t", "m", { role: "assistant" })),
+    "",
+    sseData(chunk("t", "m", { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "Read", arguments: '{"file_path":"x"}' } }] }, "tool_calls")),
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+
+  const out = JSON.parse(collapseOpenAiSseToNonStreamJson(sse));
+
+  assert.equal(out.object, "chat.completion");
+  assert.deepEqual(out.choices[0].message.tool_calls, [
+    { function: { name: "Read", arguments: '{"file_path":"x"}' }, id: "call_1", type: "function" },
+  ]);
+  assert.equal(out.choices[0].finish_reason, "tool_calls");
+}
+
+{
+  // pipeCollapsedToNonStream 模拟「forcedStream 分支不预写头」的响应分发：
+  // 用 mock upstreamRes + mock res 驱动，验证
+  //   1) headersSent 在 end 前为 false → writeHead 被调用
+  //   2) 写入 status=200, content-type=application/json
+  //   3) content-length 与 body 字节数一致（头体一致，防 writeHead 回归）
+  //   4) body 是合法非流式 chat.completion JSON
+  const { EventEmitter } = require("node:events");
+  const upstreamRes = new EventEmitter();
+  const writeHeadCalls = [];
+  const res = {
+    headersSent: false,
+    writeHead(status, headers) {
+      if (this.headersSent) {
+        throw new Error("writeHead called after headers already sent");
+      }
+      this.headersSent = true;
+      writeHeadCalls.push({ status, headers });
+    },
+    end(body) {
+      this._endedWith = body;
+    },
+  };
+
+  const sse = [
+    sseData(chunk("abc", "glm-5.2", { role: "assistant", content: "" })),
+    "",
+    sseData(chunk("abc", "glm-5.2", { content: "你好" })),
+    "",
+    sseData(chunk("abc", "glm-5.2", {}, "stop")),
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+
+  pipeCollapsedToNonStream(upstreamRes, res);
+  upstreamRes.emit("data", Buffer.from(sse, "utf8"));
+  upstreamRes.emit("end");
+
+  assert.equal(writeHeadCalls.length, 1);
+  assert.equal(writeHeadCalls[0].status, 200);
+  const headers = writeHeadCalls[0].headers;
+  assert.ok(
+    typeof headers["content-type"] === "string" &&
+      headers["content-type"].includes("application/json"),
+    `content-type should be application/json, got ${headers["content-type"]}`,
+  );
+  const body = res._endedWith;
+  assert.equal(
+    headers["content-length"],
+    Buffer.byteLength(body, "utf8"),
+    "content-length must match body byte length",
+  );
+
+  const out = JSON.parse(body);
+  assert.equal(out.object, "chat.completion");
+  assert.equal(out.choices[0].message.content, "你好");
+  assert.equal(out.choices[0].finish_reason, "stop");
 }
 
 console.log("cc-tencent-sanitize-proxy tests passed");
