@@ -12,6 +12,11 @@ const {
   sanitizeRequestJson,
 } = require("../lib/index.cjs");
 
+const {
+  commandLineMatchesProxyScript,
+  findProxy,
+} = require("../bin/cct.js");
+
 function sseData(obj) {
   return `data: ${JSON.stringify(obj)}`;
 }
@@ -776,4 +781,177 @@ function sseJsonLines(streamText) {
   assert.equal(out.choices[0].finish_reason, "stop");
 }
 
-console.log("cc-tencent-sanitize-proxy tests passed");
+// --- CLI discovery (bin/cct.js): command-line matching ---
+{
+  // 绝对 / 相对 / dot-slash 调用均应命中目录锚定后缀 lib/index.cjs
+  assert.equal(
+    commandLineMatchesProxyScript("C:\\nvm4w\\nodejs\\node.exe lib/index.cjs", undefined, "win32"),
+    true,
+  );
+  assert.equal(
+    commandLineMatchesProxyScript("node /home/u/app/lib/index.cjs", undefined, "linux"),
+    true,
+  );
+  assert.equal(
+    commandLineMatchesProxyScript("node ./lib/index.cjs", undefined, "linux"),
+    true,
+  );
+  // 其他项目的 index.cjs、无关 node 进程不应命中
+  assert.equal(
+    commandLineMatchesProxyScript("node /home/x/other/index.cjs", undefined, "linux"),
+    false,
+  );
+  assert.equal(
+    commandLineMatchesProxyScript("node server.js", undefined, "linux"),
+    false,
+  );
+  assert.equal(commandLineMatchesProxyScript("", undefined, "linux"), false);
+  // win32 大小写不敏感
+  assert.equal(
+    commandLineMatchesProxyScript("node LIB/INDEX.CJS", undefined, "win32"),
+    true,
+  );
+}
+
+// --- CLI discovery (bin/cct.js): tightened "node ... lib/index.cjs" matching (requireNode) ---
+{
+  const T = true;
+  // 真正的 node 运行该脚本 → 命中
+  assert.equal(
+    commandLineMatchesProxyScript("node lib/index.cjs", undefined, "linux", T),
+    true,
+  );
+  assert.equal(
+    commandLineMatchesProxyScript("/usr/bin/node /app/lib/index.cjs", undefined, "linux", T),
+    true,
+  );
+  assert.equal(
+    commandLineMatchesProxyScript("C:\\nvm4w\\nodejs\\node.exe lib/index.cjs", undefined, "win32", T),
+    true,
+  );
+  assert.equal(
+    commandLineMatchesProxyScript("nodejs /app/lib/index.cjs", undefined, "linux", T),
+    true,
+  );
+  // 带引号的解释器路径 → 命中
+  assert.equal(
+    commandLineMatchesProxyScript('"/usr/bin/node" /app/lib/index.cjs', undefined, "linux", T),
+    true,
+  );
+  // 仅“引用”该路径、而非 node 运行的进程 → 不命中（systemctl status 回显、编辑器、grep）
+  assert.equal(
+    commandLineMatchesProxyScript("systemctl status /app/lib/index.cjs", undefined, "linux", T),
+    false,
+  );
+  assert.equal(
+    commandLineMatchesProxyScript("grep lib/index.cjs /var/log/x", undefined, "linux", T),
+    false,
+  );
+  assert.equal(
+    commandLineMatchesProxyScript("vim /app/lib/index.cjs", undefined, "linux", T),
+    false,
+  );
+  // 脚本含该后缀但解释器不是 node（如 python）→ 不命中
+  assert.equal(
+    commandLineMatchesProxyScript("python /app/lib/index.cjs", undefined, "linux", T),
+    false,
+  );
+  // 默认（未传 requireNode）保持宽松：只要求路径后缀
+  assert.equal(
+    commandLineMatchesProxyScript("systemctl status /app/lib/index.cjs", undefined, "linux"),
+    true,
+  );
+}
+
+// --- CLI discovery (bin/cct.js): findProxy via injected deps ---
+async function testFindProxy() {
+  const SCRIPT = "/app/lib/index.cjs";
+
+  // 1) PID 文件命中且存活 → via pidfile
+  {
+    const found = await findProxy(15722, {
+      readPid: () => 1234,
+      probePort: async () => true,
+      listProxyProcessCandidates: () => [1234],
+      isManagedProxyProcess: () => true,
+      platform: "linux",
+      proxyScript: SCRIPT,
+    });
+    assert.equal(found.running, true);
+    assert.equal(found.pid, 1234);
+    assert.equal(found.via, "pidfile");
+    assert.deepEqual(found.pids, [1234]);
+  }
+
+  // 2) PID 文件过期、但进程表里有代理（systemd 场景）→ via process，pid 来自进程表
+  {
+    const found = await findProxy(15722, {
+      readPid: () => 9999, // stale
+      probePort: async () => true,
+      listProxyProcessCandidates: () => [4321],
+      isManagedProxyProcess: (pid) => pid === 4321, // stale 9999 不是代理
+      platform: "linux",
+      proxyScript: SCRIPT,
+    });
+    assert.equal(found.running, true);
+    assert.equal(found.pid, 4321);
+    assert.equal(found.via, "process");
+    assert.deepEqual(found.pids, [4321]);
+  }
+
+  // 3) 端口在听但进程表无匹配（外部容器/其他安装路径）→ via port，pid null
+  {
+    const found = await findProxy(15722, {
+      readPid: () => null,
+      probePort: async () => true,
+      listProxyProcessCandidates: () => [],
+      isManagedProxyProcess: () => false,
+      platform: "linux",
+      proxyScript: SCRIPT,
+    });
+    assert.equal(found.running, true);
+    assert.equal(found.pid, null);
+    assert.equal(found.via, "port");
+    assert.deepEqual(found.pids, []);
+  }
+
+  // 4) 什么都没跑 → running false，via none
+  {
+    const found = await findProxy(15722, {
+      readPid: () => null,
+      probePort: async () => false,
+      listProxyProcessCandidates: () => [],
+      isManagedProxyProcess: () => false,
+      platform: "linux",
+      proxyScript: SCRIPT,
+    });
+    assert.equal(found.running, false);
+    assert.equal(found.pid, null);
+    assert.equal(found.via, "none");
+    assert.equal(found.portListening, false);
+  }
+
+  // 5) 进程表为空但 PID 文件指向一个真实的代理进程（进程表枚举失败的兜底）→ 补入并命中
+  {
+    const found = await findProxy(15722, {
+      readPid: () => 777,
+      probePort: async () => false,
+      listProxyProcessCandidates: () => [],
+      isManagedProxyProcess: (pid) => pid === 777,
+      platform: "linux",
+      proxyScript: SCRIPT,
+    });
+    assert.equal(found.running, true);
+    assert.equal(found.pid, 777);
+    assert.equal(found.via, "pidfile");
+    assert.deepEqual(found.pids, [777]);
+  }
+}
+
+(async () => {
+  await testFindProxy();
+  console.log("cc-tencent-sanitize-proxy tests passed");
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

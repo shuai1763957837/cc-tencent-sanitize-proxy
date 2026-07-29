@@ -59,6 +59,8 @@ cct start --port 15722 --save-last-request --save-last-response --verbose --fore
 
 后台模式下，PID 文件与日志文件位于用户目录：`~/.cct/cct.pid`、`~/.cct/cct.log`。
 
+`cct status` / `cct stop` / `cct restart` 通过「探测 `127.0.0.1:<port>` 监听 + 在进程表中匹配 `lib/index.cjs` 命令行」来识别代理，PID 文件仅作快路径。因此无论代理是 `cct start` 后台起的、前台起的，还是由 systemd / 其他方式外部启动的（没有写 PID 文件），这三条命令都能正确发现并管理它。systemd 场景下亦可用 `systemctl status cct` 交叉确认。
+
 ### 直接运行
 
 不安装也可直接以脚本方式前台运行：

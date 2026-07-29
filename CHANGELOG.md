@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `cct status` / `cct stop` / `cct restart` previously trusted only the `~/.cct/cct.pid` file, which `cct start` is the sole writer of — so a proxy started by systemd (or any external launcher) showed as `not running` and could not be stopped even while its port was live and forwarding. The lifecycle commands now discover the proxy by probing the `127.0.0.1:<port>` socket and matching the `lib/index.cjs` command line in the process table, with the PID file kept only as a fast-path hint. Command-line matching was also relaxed from the absolute script path to the directory-anchored suffix `lib/index.cjs`, so relative / `./` / npm-shim / systemd invocations all match. `cct start` now refuses only when a real cct proxy is detected, and reports a distinct port-conflict error (instead of "already running") when the port is held by a non-cct program.
+
 ### Added
 - CLI `cct` command (`cct start` / `cct stop` / `cct restart` / `cct status` / `cct logs`) for background process management, with `--port`, `--save-last-request`, `--save-last-response` flags.
 - `package.json` declaring `bin`, `main`, `files`, `engines`, and npm scripts.
