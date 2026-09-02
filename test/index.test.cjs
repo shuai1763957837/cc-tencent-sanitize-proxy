@@ -6,6 +6,7 @@ const {
   collapseOpenAiSseToNonStreamJson,
   normalizeOpenAiSseLine,
   normalizeUsage,
+  pipeNormalizedOpenAiSse,
   pipeCollapsedToNonStream,
   resolveUpstreamUrl,
   shouldSanitize,
@@ -306,6 +307,25 @@ function sseJsonLines(streamText) {
   assert.equal(
     output,
     'data: {"choices":[{"delta":{"content":"你"},"finish_reason":null}]}',
+  );
+}
+
+{
+  // 上游每个 content 增量都带 reasoning_content:"" 空串；剥掉空串键，
+  // 保留非空 thinking 内容。
+  const output = normalizeOpenAiSseLine(
+    'data: {"choices":[{"delta":{"content":" Wor","reasoning_content":""}}]}',
+  );
+  assert.equal(
+    output,
+    'data: {"choices":[{"delta":{"content":" Wor"}}]}',
+  );
+  const keep = normalizeOpenAiSseLine(
+    'data: {"choices":[{"delta":{"content":"a","reasoning_content":"想"}}]}',
+  );
+  assert.equal(
+    keep,
+    'data: {"choices":[{"delta":{"content":"a","reasoning_content":"想"}}]}',
   );
 }
 
@@ -779,6 +799,74 @@ function sseJsonLines(streamText) {
   assert.equal(out.object, "chat.completion");
   assert.equal(out.choices[0].message.content, "你好");
   assert.equal(out.choices[0].finish_reason, "stop");
+}
+
+{
+  // 默认逐行归一化流式转发（打印机效果）：upstream 每到一帧就写一帧给客户端，
+  // 不等整流结束。COLLAPSE_TENCENT_STREAM=1 才恢复整流折叠。
+  const { EventEmitter } = require("node:events");
+  const writes = [];
+  const upstreamRes = new EventEmitter();
+  const res = {
+    headersSent: false,
+    writeHead() {
+      this.headersSent = true;
+    },
+    write(chunk) {
+      writes.push(chunk.toString("utf8"));
+    },
+    end() {
+      this.ended = true;
+    },
+  };
+
+  const frame = (content) =>
+    `data: ${JSON.stringify(chunk("abc", "glm-5.2", { content }))}\n\n`;
+
+  pipeNormalizedOpenAiSse(upstreamRes, res);
+  upstreamRes.emit("data", Buffer.from(frame("你"), "utf8"));
+  upstreamRes.emit("data", Buffer.from(frame("好"), "utf8"));
+  upstreamRes.emit("end");
+
+  assert.equal(writes.length, 2, "each upstream frame must be written through immediately");
+  assert.deepEqual(
+    writes.map((w) => JSON.parse(w.match(/^data: (.*)\n\n$/)[1]).choices[0].delta.content),
+    ["你", "好"],
+  );
+  assert.equal(res.ended, true);
+}
+
+{
+  // COLLAPSE_TENCENT_STREAM=1 恢复整流折叠模式
+  process.env.COLLAPSE_TENCENT_STREAM = "1";
+  try {
+    const { EventEmitter } = require("node:events");
+    const upstreamRes = new EventEmitter();
+    const writes = [];
+    const res = {
+      headersSent: false,
+      writeHead() {
+        this.headersSent = true;
+      },
+      write(c) {
+        writes.push(c.toString("utf8"));
+      },
+      end(c) {
+        if (c) writes.push(c);
+      },
+    };
+
+    pipeNormalizedOpenAiSse(upstreamRes, res);
+    upstreamRes.emit("data", Buffer.from(`${sseData(chunk("abc", "glm-5.2", { content: "你" }))}\n\n`, "utf8"));
+    upstreamRes.emit("data", Buffer.from(`${sseData(chunk("abc", "glm-5.2", { content: "好" }))}\n\n`, "utf8"));
+    upstreamRes.emit("end");
+
+    assert.equal(writes.length, 1, "collapsed mode must buffer and emit a single merged chunk");
+    const parsed = firstSseJson(writes[0]);
+    assert.equal(parsed.choices[0].delta.content, "你好");
+  } finally {
+    delete process.env.COLLAPSE_TENCENT_STREAM;
+  }
 }
 
 // --- CLI discovery (bin/cct.js): command-line matching ---

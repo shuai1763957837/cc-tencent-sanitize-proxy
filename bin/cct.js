@@ -9,6 +9,7 @@ const { execFileSync, spawn } = require("node:child_process");
 
 const ROOT = path.resolve(__dirname, "..");
 const PROXY_SCRIPT = path.join(ROOT, "lib", "index.cjs");
+const VERSION = require(path.join(ROOT, "package.json")).version;
 const DATA_DIR = path.join(os.homedir(), ".cct");
 const PID_FILE = path.join(DATA_DIR, "cct.pid");
 const LOG_FILE = path.join(DATA_DIR, "cct.log");
@@ -471,6 +472,8 @@ function parseArgs(argv) {
       options.foreground = true;
     } else if (arg === "-h" || arg === "--help") {
       positional.push(arg);
+    } else if (arg === "-v" || arg === "--version") {
+      positional.push(arg);
     } else {
       positional.push(arg);
     }
@@ -487,6 +490,7 @@ Commands:
   restart    Restart the running proxy
   status     Show proxy status
   logs       Print the proxy log
+  version    Print the version
 
 Options:
   --port, -p <number>     Override listen port (default 15722)
@@ -494,6 +498,8 @@ Options:
   --save-last-response    Save last upstream/normalized SSE to disk
   --verbose               Print request/response details to console
   --foreground            Run in foreground instead of background (default background)
+  -v, --version           Print the version
+  -h, --help              Show this help
 
 Files:
   pid:  ${PID_FILE}
@@ -518,6 +524,11 @@ async function main(argv) {
       break;
     case "logs":
       logs();
+      break;
+    case "-v":
+    case "--version":
+    case "version":
+      console.log(VERSION);
       break;
     case undefined:
     case "-h":
