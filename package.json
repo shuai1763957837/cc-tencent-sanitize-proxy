@@ -1,6 +1,6 @@
 {
   "name": "cc-tencent-sanitize-proxy",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Local sanitize proxy bridging Claude Code via cc-switch to Tencent Copilot Chat Completions.",
   "license": "MIT",
   "author": "shuai1763957837",
