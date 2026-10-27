@@ -220,6 +220,63 @@ function sseJsonLines(streamText) {
 }
 
 {
+  // Windows 路径里的 `.claude` 是目录名，不是品牌文案；改写会让模型去写不存在的目录。
+  const body = {
+    system:
+      "You have a persistent file-based memory at " +
+      "D:\\Users\\leon.shuai\\.claude\\projects\\D--x\\memory\\.\n" +
+      "You should create your plan at " +
+      "D:\\Users\\leon.shuai\\.claude\\plans\\a.md using the Write tool.\n" +
+      "Settings live in ~/.claude/settings.json.",
+  };
+
+  const { value, stats } = sanitizeRequestJson(body);
+
+  assert.equal(value.system, body.system);
+  assert.equal(stats.replacements, 0);
+  assert.deepEqual([...stats.rules], []);
+}
+
+{
+  // `CLAUDE.md` 是项目指令文件名，同样不能被改写成 `the coding agent.md`。
+  const body = {
+    system: "Read CLAUDE.md before coding; see claude.md too.",
+  };
+
+  const { value, stats } = sanitizeRequestJson(body);
+
+  assert.equal(value.system, body.system);
+  assert.equal(stats.replacements, 0);
+  assert.deepEqual([...stats.rules], []);
+}
+
+{
+  // 路径段（无论前接 `.`、`/`、`\`）都不该被当作品牌词改掉。
+  const body = {
+    system: "D:\\work\\claude\\bin and /opt/Claude/app and .claude.json",
+  };
+
+  const { value, stats } = sanitizeRequestJson(body);
+
+  assert.equal(value.system, body.system);
+  assert.equal(stats.replacements, 0);
+  assert.deepEqual([...stats.rules], []);
+}
+
+{
+  // 同一段文本里品牌词与路径混排：品牌词照旧替换，路径保持原样。
+  const body = {
+    system: "Claude Code 的配置在 ~/.claude/settings.json",
+  };
+
+  const { value, stats } = sanitizeRequestJson(body);
+
+  assert.equal(value.system, "the coding agent 的配置在 ~/.claude/settings.json");
+  assert.equal(stats.replacements, 1);
+  assert.deepEqual([...stats.rules], ["claude-code-product"]);
+}
+
+{
   const body = {
     system:
       "You are Claude Code, Anthropic's official CLI for Claude.\n" +
